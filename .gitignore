@@ -60,3 +60,4 @@ dist/
 
 # 忽略egg目录
 .eggs/
+.spec
