@@ -1,0 +1,62 @@
+# 忽略所有的.pyc文件
+*.pyc
+
+# 忽略__pycache__目录
+__pycache__/
+
+# 忽略虚拟环境目录
+venv/
+.venv/
+env/
+.env/
+
+# 忽略IDE特定的配置文件
+*.pydevproject
+.project
+.idea/
+.vscode/
+
+# 忽略Python日志文件
+*.log
+
+# 忽略数据库文件
+*.db
+*.sqlite
+
+# 忽略临时文件
+*.tmp
+
+# 忽略pip的安装日志
+pip-log.txt
+
+# 忽略编译生成的文件
+*.o
+*.so
+
+# 忽略node_modules目录（如果你的项目中包含前端代码）
+node_modules/
+
+# 忽略编辑器的配置文件
+*.swp
+*.swo
+*.swn
+
+# 忽略Docker配置文件
+docker-compose.yml
+Dockerfile
+
+# 忽略tox测试环境
+.tox/
+
+# 忽略coverage报告
+.coverage
+coverage.xml
+
+# 忽略build目录
+build/
+
+# 忽略dist目录
+dist/
+
+# 忽略egg目录
+.eggs/
