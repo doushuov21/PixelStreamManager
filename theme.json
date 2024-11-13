@@ -1,3 +1,100 @@
 {
-    "theme": "dark"
-}
+    "theme": "light",
+    "autostart": {
+        "signal": false,
+        "exec-ue": false
+    },
+    "ue5_params": [
+        {
+            "param": "-Unattended",
+            "desc": "无人值守模式",
+            "default": true,
+            "editable": false,
+            "input_type": null
+        },
+        {
+            "param": "-RenderOffScreen",
+            "desc": "离屏渲染",
+            "default": true,
+            "editable": false,
+            "input_type": null
+        },
+        {
+            "param": "-GraphicsAdapter=",
+            "desc": "显卡序号(0,1,2...)",
+            "default": "0",
+            "editable": true,
+            "input_type": "number"
+        },
+        {
+            "param": "-ForceRes",
+            "desc": "强制分辨率",
+            "default": true,
+            "editable": false,
+            "input_type": null
+        },
+        {
+            "param": "-ResX=",
+            "desc": "分辨率宽度",
+            "default": "1920",
+            "editable": true,
+            "input_type": "number"
+        },
+        {
+            "param": "-ResY=",
+            "desc": "分辨率高度",
+            "default": "1080",
+            "editable": true,
+            "input_type": "number"
+        },
+        {
+            "param": "-PixelStreamingWebRTCFps=",
+            "desc": "帧率限制",
+            "default": "30",
+            "editable": true,
+            "input_type": "number"
+        },
+        {
+            "param": "-PixelStreamingWebRTCDisableReceiveAudio=",
+            "desc": "禁用音频接收",
+            "default": "true",
+            "editable": false,
+            "input_type": null
+        },
+        {
+            "param": "-PixelStreamingWebRTCMaxBitrate=",
+            "desc": "最大比特率(bps)",
+            "default": "20000000",
+            "editable": true,
+            "input_type": "number"
+        },
+        {
+            "param": "-AudioMixer",
+            "desc": "音频混合器",
+            "default": false,
+            "editable": false,
+            "input_type": null
+        },
+        {
+            "param": "-RHI=Vulkan",
+            "desc": "使用Vulkan渲染",
+            "default": false,
+            "editable": false,
+            "input_type": null
+        },
+        {
+            "param": "-log",
+            "desc": "启用日志",
+            "default": false,
+            "editable": false,
+            "input_type": null
+        },
+        {
+            "param": "-NoVerifyGC",
+            "desc": "禁用GC验证",
+            "default": false,
+            "editable": false,
+            "input_type": null
+        }
+    ]
+}       
