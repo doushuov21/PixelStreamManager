@@ -20,10 +20,138 @@ import datetime
 import uuid
 import winreg
 import win32com.client
+import socket
+import requests
+import psutil
+import shutil
 
 # 在文件开头添加全局变量
 _MUTEX = None
 _MUTEX_NAME = "Global\\PixelStreamManager_SingleInstance"
+
+class FloatingButton(tk.Toplevel):
+    def __init__(self, parent, icon_path, commands):
+        super().__init__(parent)
+        
+        # 设置窗口属性
+        self.overrideredirect(True)  # 无边框窗口
+        self.attributes('-topmost', True)  # 保持在最顶层
+        self.attributes('-alpha', 0.9)  # 设置透明度
+        
+        # 设置窗口大小
+        self.size = 48
+        self.geometry(f"{self.size}x{self.size}")
+        
+        # 创建圆角背景
+        self.canvas = tk.Canvas(self, width=self.size, height=self.size, 
+                              bg='#F0F0F0', highlightthickness=0)
+        self.canvas.pack(fill='both', expand=True)
+        
+        # 加载图标
+        self.icon = Image.open(icon_path)
+        self.icon = self.icon.resize((32, 32), Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(self.icon)
+        
+        # 在画布上创建圆角矩形和图标
+        radius = 10
+        self.canvas.create_rounded_rect = lambda x1, y1, x2, y2, radius: self.canvas.create_polygon(
+            x1+radius, y1,
+            x2-radius, y1,
+            x2, y1,
+            x2, y1+radius,
+            x2, y2-radius,
+            x2, y2,
+            x2-radius, y2,
+            x1+radius, y2,
+            x1, y2,
+            x1, y2-radius,
+            x1, y1+radius,
+            x1, y1,
+            smooth=True
+        )
+        
+        # 绘制圆角矩形背景
+        self.bg_item = self.canvas.create_rounded_rect(0, 0, self.size, self.size, radius)
+        self.canvas.itemconfig(self.bg_item, fill='#F0F0F0', outline='#E0E0E0')
+        
+        # 在中心位置绘制图标
+        icon_x = (self.size - 32) // 2
+        icon_y = (self.size - 32) // 2
+        self.canvas.create_image(icon_x + 16, icon_y + 16, image=self.photo)
+        
+        # 绑定事件
+        self.canvas.bind('<Button-3>', self.show_menu)  # 改为右键显示菜单
+        self.canvas.bind('<Button-1>', self.start_drag)  # 左键开始拖动
+        self.canvas.bind('<B1-Motion>', self.on_drag)
+        self.canvas.bind('<ButtonRelease-1>', self.stop_drag)
+        self.canvas.bind('<Enter>', self.on_enter)
+        self.canvas.bind('<Leave>', self.on_leave)
+        
+        # 保存命令
+        self.commands = commands
+        
+        # 拖动相关变量
+        self.drag_start_x = 0
+        self.drag_start_y = 0
+        self.is_dragging = False
+        self.last_drag_time = 0
+        self.drag_update_interval = 1/60  # 60fps
+        
+        # 创建右键菜单
+        self.menu = tk.Menu(self, tearoff=0)
+        self.menu.add_command(label="显示主窗口", command=self.commands['show'])
+        self.menu.add_command(label="启动全部服务", command=self.commands['start'])
+        self.menu.add_command(label="停止全部服务", command=self.commands['stop'])
+        self.menu.add_separator()
+        self.menu.add_command(label="隐藏悬浮按钮", command=self.commands['hide'])
+        self.menu.add_command(label="退出程序", command=self.commands['exit'])
+    
+    def show_menu(self, event):
+        """右键显示菜单"""
+        self.menu.post(event.x_root, event.y_root)
+    
+    def start_drag(self, event):
+        """开始拖动"""
+        self.drag_start_x = event.x_root - self.winfo_x()
+        self.drag_start_y = event.y_root - self.winfo_y()
+        self.is_dragging = True
+        self.last_drag_time = time.time()
+    
+    def stop_drag(self, event):
+        """停止拖动"""
+        self.is_dragging = False
+    
+    def on_drag(self, event):
+        """拖动处理"""
+        if not self.is_dragging:
+            return
+            
+        # 控制更新频率
+        current_time = time.time()
+        if current_time - self.last_drag_time < self.drag_update_interval:
+            return
+            
+        # 计算新位置
+        new_x = event.x_root - self.drag_start_x
+        new_y = event.y_root - self.drag_start_y
+        
+        # 限制在屏幕范围内
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        new_x = max(0, min(new_x, screen_width - self.size))
+        new_y = max(0, min(new_y, screen_height - self.size))
+        
+        # 使用geometry更新位置
+        self.geometry(f"+{new_x}+{new_y}")
+        self.last_drag_time = current_time
+    
+    def on_enter(self, event):
+        """标进入效果"""
+        self.canvas.itemconfig(self.bg_item, fill='#E0E0E0')
+    
+    def on_leave(self, event):
+        """鼠标离开效果"""
+        self.canvas.itemconfig(self.bg_item, fill='#F0F0F0')
 
 class App:
     def __init__(self, root):
@@ -33,15 +161,29 @@ class App:
         # 获取运行时路径
         self.runtime_path = self.get_runtime_path()
         
+        # 设置日志
+        self.setup_logger()
+        self.logger.info("程序启动")
+        self.logger.info(f"运行时路径: {self.runtime_path}")
+        
+        # 初始化turn配置
+        self.turn_config = {
+            'listening_port': 3478,
+            'listening_ip': '127.0.0.1',
+            'external_ip': '',
+            'realm': 'mycompany.org'
+        }
+        
+        # 加载Turn配置
+        self.load_turn_config()
+        
         # 初始化配置文件路径
         self.config_file = os.path.join(self.runtime_path, 'config.json')
         self.signal_json = os.path.join(self.runtime_path, 'signal.json')
         self.theme_json = os.path.join(self.runtime_path, 'theme.json')
         
-        # 首先设置日志
-        self.setup_logger()
-        self.logger.info("程序启动")
-        self.logger.info(f"运行时路径: {self.runtime_path}")
+        # 检查并创建theme.json
+        self.check_and_create_theme_json()
         
         # 然后设置图标路径
         self.icon_path = self.get_resource_path('cloud.ico')
@@ -83,17 +225,17 @@ class App:
         # 创建UI
         self.setup_ui()
         
-        # 创建托盘图标
+        # 检查开机启动状态
+        self.autostart_enabled = self.check_autostart()
+        
+        # 创建托盘图
         self.setup_tray_icon()
         
         # 绑定关闭事件
         self.root.protocol('WM_DELETE_WINDOW', self.on_closing)
         
-        # 加载自动启动配置
+        # 加载自动启动置
         self.load_autostart_config()
-        
-        # 检查开机启动状态
-        self.autostart_enabled = self.check_autostart()
         
         # 确保托盘图标创建成功
         if not self.setup_tray_icon():
@@ -102,7 +244,10 @@ class App:
         
         # 检查资源文件
         self.check_resources()
-
+        
+        # 设置悬浮按钮
+        self.setup_floating_button()
+        
     def setup_logger(self):
         """设置日志"""
         try:
@@ -111,7 +256,7 @@ class App:
             guid = str(uuid.uuid4())[:8]  # 使用UUID的前8位
             log_filename = f"{current_time}_{guid}.log"
             
-            # 创建logs目录（如果不存在）
+            # 创建logs目录（如果不在）
             logs_dir = os.path.join(self.runtime_path, 'logs')
             if not os.path.exists(logs_dir):
                 os.makedirs(logs_dir)
@@ -145,7 +290,7 @@ class App:
             print(f"日志文件创建成功: {log_path}")
             
         except Exception as e:
-            print(f"设置日志失败: {str(e)}")
+            print(f"日志失败: {str(e)}")
 
     def load_ue5_configs(self):
         """加载UE5配置"""
@@ -199,7 +344,7 @@ class App:
                         self.instance_listbox.insert(tk.END, display_text)
                         self.logger.debug(f"添加列表项: {display_text}")
             else:
-                self.logger.warning("没有UE5配置或配置未初始化")
+                self.logger.warning("没有UE5配或置初")
                 
         except Exception as e:
             self.logger.error("刷新UE5列表失败", exc_info=True)
@@ -301,6 +446,11 @@ class App:
     def setup_tray_icon(self):
         """设置系统托盘图标"""
         try:
+            # 如果已存在托盘图标，先移除
+            if hasattr(self, 'tray_icon') and self.tray_icon:
+                self.tray_icon.stop()
+                self.tray_icon = None
+            
             # 加载图标
             icon_path = self.get_resource_path('cloud.ico')
             if not os.path.exists(icon_path):
@@ -318,9 +468,13 @@ class App:
                 pystray.MenuItem("显示主窗口", self.show_window),
                 pystray.MenuItem("启动全部服务", self.start_all),
                 pystray.MenuItem("停止全部服务", self.stop_all),
+                pystray.MenuItem("显示悬浮按钮", 
+                        self.show_floating_button,
+                        checked=lambda _: hasattr(self, 'floating_button') and 
+                                        self.floating_button.winfo_viewable()),
                 pystray.MenuItem("开机启动", 
-                               self.toggle_autostart, 
-                               checked=lambda _: self.autostart_enabled),
+                        self.toggle_autostart, 
+                        checked=lambda _: self.autostart_enabled),
                 pystray.MenuItem("退出程序", self.quit_app)
             )
             
@@ -372,7 +526,7 @@ class App:
             sys.exit(0)
 
     def get_runtime_path(self):
-        """获取程序运行时的路径"""
+        """获取程序运时的路径"""
         try:
             if getattr(sys, 'frozen', False):
                 return os.path.dirname(sys.executable)
@@ -424,7 +578,7 @@ class App:
             self.logger.error(f"显示窗口失败: {str(e)}")
 
     def run_tray_icon(self):
-        """单独的线程中运行托盘图标"""
+        """独的线程中运行托盘图标"""
         try:
             self.tray_icon.run()
         except Exception as e:
@@ -449,7 +603,7 @@ class App:
         
         ttk.Button(signal_frame, text="启动", width=12,
                   command=lambda: self.start_script('signal')).pack(side='left', padx=5)
-        ttk.Button(signal_frame, text="停止", width=12,
+        ttk.Button(signal_frame, text="止", width=12,
                   command=lambda: self.stop_script('signal')).pack(side='left', padx=5)
         
         self.status_labels['signal'] = ttk.Label(signal_frame, text="未运行")
@@ -488,7 +642,7 @@ class App:
         global_frame.pack(fill='x', pady=10)
         ttk.Button(global_frame, text="启动全部", width=15,
                   command=self.start_all).pack(side='left', padx=5)
-        ttk.Button(global_frame, text="停止全部", width=15,
+        ttk.Button(global_frame, text="停止全", width=15,
                   command=self.stop_all).pack(side='left', padx=5)
         
         # 右侧输出区域
@@ -499,33 +653,47 @@ class App:
         signal_output = ttk.LabelFrame(output_panel, text="信令服务输出")
         signal_output.pack(fill='both', expand=True, pady=(0, 10))
         
-        self.detail_labels['signal'] = tk.Text(signal_output, 
-                                             height=10,
-                                             font=('Consolas', 9),  # 设置小号等宽字体
-                                             wrap='none')  # 禁用自动换行
-        self.detail_labels['signal'].pack(fill='both', expand=True, padx=5, pady=5)
+        # 创建框架来容纳文本框和滚动条
+        signal_text_frame = ttk.Frame(signal_output)
+        signal_text_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # 添加滚动条
-        signal_scroll = ttk.Scrollbar(signal_output, orient="vertical", 
-                                    command=self.detail_labels['signal'].yview)
+        # 创建滚动条
+        signal_scroll = ttk.Scrollbar(signal_text_frame)
         signal_scroll.pack(side='right', fill='y')
-        self.detail_labels['signal'].configure(yscrollcommand=signal_scroll.set)
+        
+        # 创建文本框
+        self.detail_labels['signal'] = tk.Text(signal_text_frame, 
+                                             height=10,
+                                             font=('Consolas', 9),
+                                             wrap='none')
+        self.detail_labels['signal'].pack(side='left', fill='both', expand=True)
+        
+        # 关联滚动条和文本框
+        self.detail_labels['signal'].config(yscrollcommand=signal_scroll.set)
+        signal_scroll.config(command=self.detail_labels['signal'].yview)
         
         # Exec-ue.js 输出
         exec_output = ttk.LabelFrame(output_panel, text="负载服务输出")
         exec_output.pack(fill='both', expand=True, pady=(10, 0))
         
-        self.detail_labels['exec-ue'] = tk.Text(exec_output, 
-                                              height=10,
-                                              font=('Consolas', 9),  # 设置小号等宽字体
-                                              wrap='none')  # 禁用自动换行
-        self.detail_labels['exec-ue'].pack(fill='both', expand=True, padx=5, pady=5)
+        # 创建框架来容纳文本框和滚动条
+        exec_text_frame = ttk.Frame(exec_output)
+        exec_text_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # 添加滚动条
-        exec_scroll = ttk.Scrollbar(exec_output, orient="vertical", 
-                                  command=self.detail_labels['exec-ue'].yview)
+        # 创建滚动条
+        exec_scroll = ttk.Scrollbar(exec_text_frame)
         exec_scroll.pack(side='right', fill='y')
-        self.detail_labels['exec-ue'].configure(yscrollcommand=exec_scroll.set)
+        
+        # 创建文本框
+        self.detail_labels['exec-ue'] = tk.Text(exec_text_frame, 
+                                              height=10,
+                                              font=('Consolas', 9),
+                                              wrap='none')
+        self.detail_labels['exec-ue'].pack(side='left', fill='both', expand=True)
+        
+        # 关联滚动条和文本框
+        self.detail_labels['exec-ue'].config(yscrollcommand=exec_scroll.set)
+        exec_scroll.config(command=self.detail_labels['exec-ue'].yview)
         
         # 添加主题切换按钮
         theme_frame = ttk.Frame(control_panel)
@@ -538,7 +706,51 @@ class App:
         ue5_frame.pack(fill='x', pady=10)
         ttk.Button(ue5_frame, text="UE5配置", width=15,
                   command=self.show_ue5_config).pack(side='left', padx=5)
-
+        
+        # 在控制面板中添加 TURN 服务控制区域
+        turn_section = ttk.LabelFrame(control_panel, text="TURN 服务")
+        turn_section.pack(fill='x', pady=10)
+        
+        # TURN 服务控制按钮
+        turn_frame = ttk.Frame(turn_section)
+        turn_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Button(turn_frame, text="启动", width=12,
+                  command=self.start_turn_service).pack(side='left', padx=5)
+        ttk.Button(turn_frame, text="停止", width=12,
+                  command=self.stop_turn_service).pack(side='left', padx=5)
+        ttk.Button(turn_frame, text="配置", width=12,
+                  command=self.setup_turn_config_dialog).pack(side='left', padx=5)
+        
+        # 初始化TURN服务状态标签
+        self.status_labels['turn'] = ttk.Label(turn_frame, text="未运行", foreground="red")
+        self.status_labels['turn'].pack(side='left', padx=10)
+        
+        # TURN 服务输出
+        turn_output = ttk.LabelFrame(output_panel, text="TURN 服务输出")
+        turn_output.pack(fill='both', expand=True, pady=10)
+        
+        # 创建框架来容纳文本框和滚动条
+        turn_text_frame = ttk.Frame(turn_output)
+        turn_text_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # 创建滚动条
+        turn_scroll = ttk.Scrollbar(turn_text_frame)
+        turn_scroll.pack(side='right', fill='y')
+        
+        # 创建文本框
+        self.detail_labels['turn'] = tk.Text(
+            turn_text_frame,
+            height=10,
+            font=('Consolas', 9),
+            wrap='none'
+        )
+        self.detail_labels['turn'].pack(side='left', fill='both', expand=True)
+        
+        # 关联滚动条和文本框
+        self.detail_labels['turn'].config(yscrollcommand=turn_scroll.set)
+        turn_scroll.config(command=self.detail_labels['turn'].yview)
+        
     def start_all(self):
         """启动所有服务"""
         self.start_script('signal')
@@ -563,12 +775,10 @@ class App:
             messagebox.showerror("错误", error_msg)
 
     def start_script(self, script_name, manual=True):
-        """启动脚本
-        manual: 是否是手动启动，只有手动启动才更新配置
-        """
+        """启动脚本"""
         try:
             script_path = os.path.join(self.runtime_path, f"{script_name}.js")
-            self.logger.info(f"准备启动脚本: {script_path}")
+            short_script_path = self.get_short_path(script_path)
             
             if not os.path.exists(script_path):
                 raise FileNotFoundError(f"找不到脚本文件: {script_path}")
@@ -578,15 +788,21 @@ class App:
             
             # 设置输出文件路径
             output_file = os.path.join(self.runtime_path, f"{script_name}_output.txt")
+            short_output_file = self.get_short_path(output_file)
             
             # 构建命令
-            cmd = f'cmd /c chcp 65001 & node "{script_path}" > "{output_file}" 2>&1'
+            cmd = f'cmd /c chcp 65001 & node "{short_script_path}" > "{short_output_file}" 2>&1'
+            
+            # 设置启动信息
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             
             # 在当前目录下启动进程
             process = subprocess.Popen(
                 cmd,
                 shell=True,
-                cwd=self.runtime_path,
+                cwd=self.get_short_path(self.runtime_path),
+                startupinfo=startupinfo,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
             
@@ -618,19 +834,40 @@ class App:
         def monitor():
             try:
                 last_size = 0
+                last_check_time = time.time()
+                no_update_count = 0
+                
                 while True:
                     if os.path.exists(output_file):
-                        current_size = os.path.getsize(output_file)
-                        if current_size > last_size:
-                            with open(output_file, 'r', encoding='utf-8') as f:
-                                f.seek(last_size)
-                                new_content = f.read()
-                                self.root.after(0, lambda: self.update_output(script_name, new_content))
-                            last_size = current_size
+                        try:
+                            current_size = os.path.getsize(output_file)
+                            if current_size > last_size:
+                                with open(output_file, 'r', encoding='utf-8') as f:
+                                    f.seek(last_size)
+                                    new_content = f.read()
+                                    self.root.after(0, lambda: self.update_output(script_name, new_content))
+                                last_size = current_size
+                                no_update_count = 0
+                            else:
+                                # 检查文件是否长时间没有更新
+                                current_time = time.time()
+                                if current_time - last_check_time > 5:  # 每5秒检查一次
+                                    no_update_count += 1
+                                    if no_update_count >= 3:  # 如果连续3次没有更新
+                                        # 重新读取整个文件
+                                        with open(output_file, 'r', encoding='utf-8') as f:
+                                            content = f.read()
+                                            if content.strip():  # 如果文件不为空
+                                                self.root.after(0, lambda: self.update_output(script_name, 
+                                                          "\n=== 重新加载日志 ===\n" + content))
+                                        no_update_count = 0
+                                    last_check_time = current_time
+                        except Exception as e:
+                            self.logger.error(f"读取输出文件失败: {str(e)}")
                     time.sleep(0.1)
             except Exception as e:
-                print(f"监控输出失败: {str(e)}")
-        
+                self.logger.error(f"监控输出失败: {str(e)}")
+
         threading.Thread(target=monitor, daemon=True).start()
 
     def update_output(self, script_name, content):
@@ -643,9 +880,7 @@ class App:
             text_widget.config(state='disabled')
 
     def stop_script(self, script_name, manual=True):
-        """停止脚本
-        manual: 是否是手动停止，只有手动停止才更新配置
-        """
+        """停止脚本"""
         try:
             if script_name == 'signal':
                 # 先停止signal.js
@@ -804,7 +1039,7 @@ echo.
                         self.log_to_signal(f"✓ 成功停止: {exe_name}\n")
                     elif '[FAILED]' in line:
                         exe_name = line.split('"')[1]
-                        self.log_to_signal(f"× 停止失败: {exe_name}\n")
+                        self.log_to_signal(f"× 停失败: {exe_name}\n")
             
             # 删除临时批处理文件
             try:
@@ -828,7 +1063,7 @@ echo.
                 text_widget.insert('end', message)
                 text_widget.see('end')
                 text_widget.config(state='disabled')
-            print(message, end='')  # 同时输出到控制台
+            print(message, end='')  # 同时输出到制台
         except Exception as e:
             print(f"输出到信令窗口失败: {str(e)}")
 
@@ -889,7 +1124,7 @@ echo.
             print(f"保存主题失败: {str(e)}")
 
     def toggle_theme(self):
-        """切换主题"""
+        """切换主"""
         self.current_theme = 'dark' if self.current_theme == 'light' else 'light'
         self.apply_theme()
         self.save_theme()
@@ -906,7 +1141,7 @@ echo.
             # 设置ttk样式
             style = ttk.Style()
             
-            # 配置基本样式
+            # 配置基本式
             style.configure('Custom.TFrame', background=theme['frame_bg'])
             style.configure('Custom.TLabelframe', background=theme['frame_bg'])
             style.configure('Custom.TLabelframe.Label', 
@@ -951,8 +1186,7 @@ echo.
                     background=theme['output_bg'],
                     foreground=theme['output_fg'],
                     insertbackground=theme['output_fg']
-                )
-            
+            )
             # 更新输入框
             if hasattr(self, 'ip_entry'):
                 self.ip_entry.configure(style='TEntry')
@@ -1035,7 +1269,7 @@ echo.
             self.port_var = tk.StringVar(value="10090")
             ttk.Entry(port_frame, textvariable=self.port_var, width=6).pack(side='left', padx=5)
             
-            # 认证配置
+            # 认配置
             auth_frame = ttk.Frame(config_frame)
             auth_frame.pack(fill='x', padx=5, pady=5)
             self.auth_var = tk.BooleanVar(value=False)
@@ -1045,7 +1279,7 @@ echo.
             one2one_frame = ttk.Frame(config_frame)
             one2one_frame.pack(fill='x', padx=5, pady=5)
             self.one2one_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(one2one_frame, text="一对一模式", variable=self.one2one_var).pack(side='left')
+            ttk.Checkbutton(one2one_frame, text="一对一式", variable=self.one2one_var).pack(side='left')
             
             # 预加载配置
             preload_frame = ttk.Frame(config_frame)
@@ -1057,7 +1291,7 @@ echo.
             # 冷却时间配置
             cooltime_frame = ttk.Frame(config_frame)
             cooltime_frame.pack(fill='x', padx=5, pady=5)
-            ttk.Label(cooltime_frame, text="冷却时间(秒):").pack(side='left')
+            ttk.Label(cooltime_frame, text="冷却时��(秒):").pack(side='left')
             self.cooltime_var = tk.StringVar(value="60")
             ttk.Entry(cooltime_frame, textvariable=self.cooltime_var, width=4).pack(side='left', padx=5)
             
@@ -1164,10 +1398,11 @@ echo.
             scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=main_canvas.yview)
             scrollable_frame = ttk.Frame(main_canvas)
             
+            # 修复括号闭合问题
             scrollable_frame.bind(
                 "<Configure>",
                 lambda e: main_canvas.configure(scrollregion=main_canvas.bbox("all"))
-            )
+            )  # 添加闭合括号
             
             main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
             main_canvas.configure(yscrollcommand=scrollbar.set)
@@ -1281,7 +1516,7 @@ echo.
                     for param, var in param_vars.items():
                         if var.get():
                             if param in param_entries:
-                                # 可编辑参数
+                                # 可编辑数
                                 value = param_entries[param].get()
                                 selected_params.append(f"{param}{value}")
                             else:
@@ -1378,7 +1613,7 @@ echo.
             height = 800
             self.center_window(dialog, width, height)
             
-            # 创建主滚动框架
+            # 建滚动框架
             main_canvas = tk.Canvas(dialog)
             scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=main_canvas.yview)
             scrollable_frame = ttk.Frame(main_canvas)
@@ -1529,7 +1764,7 @@ echo.
                     for param, var in param_vars.items():
                         if var.get():
                             if param in param_entries:
-                                # 可编辑参数
+                                # 可编辑数
                                 value = param_entries[param].get()
                                 selected_params.append(f"{param}{value}")
                             else:
@@ -1541,7 +1776,7 @@ echo.
                     cmd = f'{start_prefix}start {exe_path.get()} {" ".join(selected_params)} ' \
                           f'-PixelStreamingURL=ws://{ws_ip.get()}:{ws_port.get()}/'
                     
-                    self.logger.debug(f"更新配置: {cmd}")
+                    self.logger.debug(f"新配置: {cmd}")
                     
                     # 更新配置
                     self.ue5_configs[index] = cmd
@@ -1572,12 +1807,12 @@ echo.
                         self.ue5_params = data['ue5_params']
                         self.logger.info(f"成功加载UE5参数配置: {len(self.ue5_params)}个参数")
                         for param in self.ue5_params:
-                            self.logger.debug(f"参数: {param['desc']} ({param['param']})")
+                            self.logger.debug(f"参数: {param['desc']} ({param['param']}")
                     else:
                         self.logger.warning("theme.json中未找到ue5_params配置")
                         self.ue5_params = []
             else:
-                self.logger.error(f"配置文件不存在: {self.theme_json}")
+                self.logger.error(f"配置文件存在: {self.theme_json}")
                 # 使用默认参数配置
                 self.ue5_params = [
                     {
@@ -1593,46 +1828,98 @@ echo.
             self.logger.error("加载UE5参数配置失败", exc_info=True)
             self.ue5_params = []
 
-    def create_default_theme_json(self):
-        """创建默认的theme.json"""
-        default_config = {
-            "theme": "light",
-            "autostart": {
-                "signal": False,
-                "exec-ue": False
-            },
-            "ue5_params": [
-                {
-                    "param": "-Unattended",
-                    "desc": "无人值守模式",
-                    "default": True,
-                    "editable": False,
-                    "input_type": None
-                },
-                {
-                    "param": "-RenderOffScreen",
-                    "desc": "离屏渲染",
-                    "default": True,
-                    "editable": False,
-                    "input_type": None
-                },
-                {
-                    "param": "-GraphicsAdapter=",
-                    "desc": "显卡序号(0,1,2...)",
-                    "default": "0",
-                    "editable": True,
-                    "input_type": "number"
-                },
-                # ... 其他参数 ...
-            ]
-        }
-        
+    def check_and_create_theme_json(self):
+        """检查并创建默认的theme.json"""
         try:
-            with open(self.theme_json, 'w', encoding='utf-8') as f:
-                json.dump(default_config, f, indent=4)
-            self.logger.info(f"创建默认theme.json成功")
+            if not os.path.exists(self.theme_json):
+                default_config = {
+                    "theme": "light",
+                    "autostart": {
+                        "signal": False,
+                        "exec-ue": False,
+                        "turn": False
+                    },
+                    "floating_button_visible": True,
+                    "ue5_params": [
+                        {
+                            "param": "-Unattended",
+                            "desc": "无人值守模式",
+                            "default": True,
+                            "editable": False,
+                            "input_type": None
+                        },
+                        {
+                            "param": "-RenderOffScreen",
+                            "desc": "离屏渲染",
+                            "default": True,
+                            "editable": False,
+                            "input_type": None
+                        },
+                        {
+                            "param": "-GraphicsAdapter=",
+                            "desc": "显卡序号(0,1,2...)",
+                            "default": "0",
+                            "editable": True,
+                            "input_type": "number"
+                        },
+                        {
+                            "param": "-ForceRes",
+                            "desc": "强制分辨率",
+                            "default": True,
+                            "editable": False,
+                            "input_type": None
+                        },
+                        {
+                            "param": "-ResX=",
+                            "desc": "分辨率宽度",
+                            "default": "1920",
+                            "editable": True,
+                            "input_type": "number"
+                        },
+                        {
+                            "param": "-ResY=",
+                            "desc": "分辨率高度",
+                            "default": "1080",
+                            "editable": True,
+                            "input_type": "number"
+                        },
+                        {
+                            "param": "-PixelStreamingWebRTCFps=",
+                            "desc": "帧率",
+                            "default": "30",
+                            "editable": True,
+                            "input_type": "number"
+                        },
+                        {
+                            "param": "-PixelStreamingWebRTCDisableReceiveAudio=",
+                            "desc": "禁用音频",
+                            "default": "true",
+                            "editable": True,
+                            "input_type": "text"
+                        },
+                        {
+                            "param": "-PixelStreamingWebRTCMaxBitrate=",
+                            "desc": "最大比特率",
+                            "default": "20000000",
+                            "editable": True,
+                            "input_type": "number"
+                        }
+                    ]
+                }
+                
+                # 创建文件
+                with open(self.theme_json, 'w', encoding='utf-8') as f:
+                    json.dump(default_config, f, indent=4)
+                
+                print(f"已创建默认theme.json: {self.theme_json}")
+                
         except Exception as e:
-            self.logger.error(f"创建默认theme.json失败: {str(e)}")
+            print(f"创建theme.json失败: {str(e)}")
+            # 如果创建失败，使用内存中的默认值
+            self.theme = "light"
+            self.autostart = {"signal": False, "exec-ue": False, "turn": False}
+            self.floating_button_visible = True
+            self.ue5_params = default_config["ue5_params"]
 
     def validate_number(self, value):
         """验证数字输入"""
@@ -1661,9 +1948,11 @@ echo.
                     
                     # 自动启动配置的服务
                     if autostart.get('signal', False):
-                        self.root.after(1000, lambda: self.start_script('signal'))
+                        self.root.after(1000, lambda: self.start_script('signal', manual=False))
                     if autostart.get('exec-ue', False):
-                        self.root.after(2000, lambda: self.start_script('exec-ue'))
+                        self.root.after(2000, lambda: self.start_script('exec-ue', manual=False))
+                    if autostart.get('turn', False):  # 添加turn服务的自动启动检查
+                        self.root.after(3000, lambda: self.start_turn_service(manual=False))
                         
                     self.logger.info(f"加载自动启动配置: {autostart}")
         except Exception as e:
@@ -1724,7 +2013,7 @@ echo.
                 except Exception as e:
                     self.logger.error(f"清理输出文件失败: {str(e)}")
                 
-                # 清空输出框并显示停止信息
+                # 清输出框并显示停止信息
                 if script_name in self.detail_labels:
                     text_widget = self.detail_labels[script_name]
                     text_widget.config(state='normal')
@@ -1786,7 +2075,7 @@ echo.
         window.geometry(f'{width}x{height}+{x}+{y}')
 
     def get_resource_path(self, relative_path):
-        """获取资源文件的路径"""
+        """获取源文件的路径"""
         try:
             # 判断是否是打包后的exe
             if getattr(sys, 'frozen', False):
@@ -1803,7 +2092,7 @@ echo.
             if hasattr(self, 'logger'):
                 self.logger.debug(f"完整资源路径: {full_path}")
             
-            # 检查文件是否存在
+            # 检查文件否存在
             if os.path.exists(full_path):
                 if hasattr(self, 'logger'):
                     self.logger.info(f"找到资源文件: {full_path}")
@@ -1908,7 +2197,7 @@ echo.
             return False
 
     def toggle_autostart(self, icon=None):
-        """切换开机启动状态"""
+        """切换启动状态"""
         try:
             # 切换状态
             new_state = not self.autostart_enabled
@@ -1945,7 +2234,7 @@ echo.
         try:
             resources = [
                 ('cloud.ico', '图标文件'),
-                ('cloud.png', '图标文件')
+                ('cloud.png', '标文件')  # 保留cloud.png作为备用图标
             ]
             
             missing_files = []
@@ -1976,6 +2265,569 @@ echo.
             if hasattr(self, 'logger'):
                 self.logger.error(f"隐藏窗口失败: {str(e)}")
             self.quit_app()  # 如果隐藏失败，则退出程序
+
+    def load_turn_config(self):
+        """加载Turn服务配置"""
+        try:
+            config_path = os.path.join(self.runtime_path, 'turnserver', 'turnserver.conf')
+            if not os.path.exists(config_path):
+                self.logger.warning(f"Turn配置文件不存在: {config_path}")
+                return  # 使用默认配置
+            
+            with open(config_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            # 使用正则表达式提取配置值
+            listening_port = re.search(r'listening-port\s*=\s*(\d+)', content)
+            listening_ip = re.search(r'listening-ip\s*=\s*([^\n]+)', content)
+            external_ip = re.search(r'external-ip\s*=\s*([^\n]+)', content)
+            realm = re.search(r'realm\s*=\s*([^\n]+)', content)
+            
+            # 更新配置，如果找到对应值则使用，否则保持默认值
+            if listening_port:
+                self.turn_config['listening_port'] = int(listening_port.group(1))
+            if listening_ip:
+                self.turn_config['listening_ip'] = listening_ip.group(1).strip()
+            if external_ip:
+                self.turn_config['external_ip'] = external_ip.group(1).strip()
+            if realm:
+                self.turn_config['realm'] = realm.group(1).strip()
+            
+            self.logger.info("成功加载Turn配置")
+            
+        except Exception as e:
+            self.logger.error(f"加载Turn配置失败: {str(e)}")
+            # 保持默认配置值
+
+    def save_turn_config(self):
+        """保存Turn服务配置"""
+        try:
+            config_path = os.path.join(self.runtime_path, 'turnserver', 'turnserver.conf')
+            
+            # 如果配置文件不存在，尝试从备份文件复制
+            if not os.path.exists(config_path):
+                backup_path = os.path.join(self.runtime_path, 'turnserver', 'turnserver copy 2.conf')
+                if os.path.exists(backup_path):
+                    import shutil
+                    shutil.copy2(backup_path, config_path)
+                    self.logger.info(f"从备份文件创建配置: {backup_path} -> {config_path}")
+            
+            # 读取现有配置
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+            else:
+                self.logger.warning("配置文件不存在，将创建新文件")
+                lines = []
+            
+            # 需要更新的配置项
+            updates = {
+                'listening-port': str(self.turn_config['listening_port']),
+                'listening-ip': self.turn_config['listening_ip'],
+                'external-ip': self.turn_config['external_ip']
+            }
+            
+            # 标记哪些配置项已经更新过
+            updated_keys = set()
+            
+            # 更新现有配置行
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    for key in updates:
+                        if line.startswith(key + '='):
+                            lines[i] = f"{key}={updates[key]}\n"
+                            updated_keys.add(key)
+                            break
+            
+            # 添加未包含的配置项
+            for key, value in updates.items():
+                if key not in updated_keys:
+                    lines.append(f"{key}={value}\n")
+            
+            # 保存配置前创建备份
+            if os.path.exists(config_path):
+                backup_path = config_path + '.bak'
+                import shutil
+                shutil.copy2(config_path, backup_path)
+                self.logger.info(f"创建配置文件备份: {backup_path}")
+            
+            # 保存配置
+            with open(config_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+                
+            self.logger.info("Turn配置已保存")
+            
+        except Exception as e:
+            self.logger.error(f"保存Turn配置失败: {str(e)}")
+            messagebox.showerror("错误", f"保存配置失败: {str(e)}")
+
+    def detect_local_ip(self):
+        """检测本地IP"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception as e:
+            self.logger.error(f"检测本地IP失败: {str(e)}")
+            return None
+
+    def detect_public_ip(self):
+        """检测公网IP"""
+        try:
+            response = requests.get('https://api.ipify.org', timeout=5)
+            return response.text.strip()
+        except Exception as e:
+            self.logger.error(f"检测公网IP失败: {str(e)}")
+            return None
+
+    def setup_turn_config_dialog(self):
+        """显示Turn配置对话框"""
+        try:
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Turn服务配置")
+            dialog.transient(self.root)
+            
+            # 设置窗口图标
+            self.set_window_icon(dialog)
+            
+            # 设置窗口大小和位置
+            width = 600  # 增加宽度以适应新内容
+            height = 400 # 增加高度以��应新内容
+            self.center_window(dialog, width, height)
+            
+            # 创建配置输入框
+            config_frame = ttk.LabelFrame(dialog, text="网络配置")
+            config_frame.pack(fill='x', padx=10, pady=5)
+            
+            # 监听端口
+            port_frame = ttk.Frame(config_frame)
+            port_frame.pack(fill='x', padx=5, pady=2)
+            ttk.Label(port_frame, text="监听端口:").pack(side='left')
+            port_var = tk.StringVar(value=str(self.turn_config.get('listening_port', 3478)))
+            port_entry = ttk.Entry(port_frame, textvariable=port_var, width=6)
+            port_entry.pack(side='left', padx=5)
+            
+            # 监听IP
+            local_ip_frame = ttk.Frame(config_frame)
+            local_ip_frame.pack(fill='x', padx=5, pady=2)
+            ttk.Label(local_ip_frame, text="监听IP:").pack(side='left')
+            local_ip_var = tk.StringVar(value=self.turn_config['listening_ip'])
+            local_ip_entry = ttk.Entry(local_ip_frame, textvariable=local_ip_var, width=15)
+            local_ip_entry.pack(side='left', padx=5)
+            ttk.Button(local_ip_frame, text="检测", 
+                       command=lambda: local_ip_var.set(self.detect_local_ip() or "")).pack(side='left')
+            
+            # 公网IP
+            public_ip_frame = ttk.Frame(config_frame)
+            public_ip_frame.pack(fill='x', padx=5, pady=2)
+            ttk.Label(public_ip_frame, text="公网IP:").pack(side='left')
+            public_ip_var = tk.StringVar(value=self.turn_config['external_ip'])
+            public_ip_entry = ttk.Entry(public_ip_frame, textvariable=public_ip_var, width=15)
+            public_ip_entry.pack(side='left', padx=5)
+            ttk.Button(public_ip_frame, text="检测",
+                       command=lambda: public_ip_var.set(self.detect_public_ip() or "")).pack(side='left')
+            
+            # 修改 ICE Servers 配置区域
+            ice_frame = ttk.LabelFrame(dialog, text="ICE Servers配置")
+            ice_frame.pack(fill='both', expand=True, padx=10, pady=5)
+            
+            # TURN/STUN服器配置
+            turn_config_frame = ttk.Frame(ice_frame)
+            turn_config_frame.pack(fill='x', padx=5, pady=2)
+            
+            # URLs文本框
+            urls_frame = ttk.Frame(turn_config_frame)
+            urls_frame.pack(fill='x', pady=2)
+            ttk.Label(urls_frame, text="URLs:").pack(side='left')
+            urls_text = tk.Text(urls_frame, height=6, width=50)
+            urls_text.pack(side='left', padx=5)
+            
+            # 添加用户名和密码输入框
+            auth_frame = ttk.Frame(turn_config_frame)
+            auth_frame.pack(fill='x', pady=2)
+            
+            # 用户名
+            ttk.Label(auth_frame, text="用户名:").pack(side='left')
+            username_var = tk.StringVar()
+            username_entry = ttk.Entry(auth_frame, textvariable=username_var, width=15)
+            username_entry.pack(side='left', padx=5)
+            
+            # 密码
+            ttk.Label(auth_frame, text="密码:").pack(side='left')
+            credential_var = tk.StringVar()
+            credential_entry = ttk.Entry(auth_frame, textvariable=credential_var, width=15)
+            credential_entry.pack(side='left', padx=5)
+            
+            # 默认的STUN服务器配置
+            DEFAULT_STUN_SERVERS = [
+                "stun:stun.l.google.com:19302",
+                "stun:stun1.l.google.com:19302",
+                "stun:stun2.l.google.com:19302",
+                "stun:stun3.l.google.com:19302",
+                "stun:stun4.l.google.com:19302"
+            ]
+
+            def restore_defaults():
+                """恢复默认配置"""
+                urls_text.delete('1.0', tk.END)
+                urls_text.insert('1.0', '\n'.join(DEFAULT_STUN_SERVERS))
+                # 清除用户名和密码
+                username_var.set("")
+                credential_var.set("")
+
+            # 添加恢复默认按钮
+            ttk.Button(urls_frame, text="恢复默认",
+                      command=restore_defaults).pack(side='left', padx=5)
+
+            # 从signal.json加载现有的配置
+            try:
+                with open(self.signal_json, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if 'iceServers' in data and len(data['iceServers']) > 0:
+                        ice_server = data['iceServers'][0]
+                        if 'urls' in ice_server and len(ice_server['urls']) > 0:
+                            urls_text.delete('1.0', tk.END)
+                            urls_text.insert('1.0', '\n'.join(ice_server['urls']))
+                        # 加载用户名和密码
+                        username_var.set(ice_server.get('username', ''))
+                        credential_var.set(ice_server.get('credential', ''))
+                    else:
+                        restore_defaults()
+            except Exception as e:
+                self.logger.error(f"加载ICE Servers配置失败: {str(e)}")
+                restore_defaults()
+
+            def save_config():
+                try:
+                    # 保存原有的TURN配置
+                    port = int(port_var.get())
+                    if port < 1 or port > 65535:
+                        raise ValueError("端口必须在1-65535之间")
+                    
+                    local_ip = local_ip_var.get()
+                    public_ip = public_ip_var.get()
+                    if not all(map(self.validate_ip, [local_ip, public_ip])):
+                        raise ValueError("IP地址格式无效")
+                    
+                    # 更新Turn配置
+                    self.turn_config.update({
+                        'listening_port': port,
+                        'listening_ip': local_ip,
+                        'external_ip': public_ip
+                    })
+                    
+                    # 保存Turn配置
+                    self.save_turn_config()
+                    
+                    # 读取现有配置
+                    with open(self.signal_json, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # 获取并清理URLs
+                    urls = [url.strip() for url in urls_text.get('1.0', 'end-1c').split('\n') 
+                           if url.strip()]
+                    
+                    # 构建新iceServers配置
+                    ice_server = {
+                        "urls": urls
+                    }
+                    
+                    # 如果有用户名和密码，则添加到配置中
+                    username = username_var.get().strip()
+                    credential = credential_var.get().strip()
+                    if username:
+                        ice_server['username'] = username
+                    if credential:
+                        ice_server['credential'] = credential
+                    
+                    # 更新iceServers配置
+                    data['iceServers'] = [ice_server]
+                    
+                    # 保存到文件
+                    with open(self.signal_json, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent='\t')
+                    
+                    dialog.destroy()
+                    messagebox.showinfo("成功", "配置已保存")
+                    
+                except Exception as e:
+                    messagebox.showerror("错误", str(e))
+
+            # 底部按钮
+            btn_frame = ttk.Frame(dialog)
+            btn_frame.pack(side='bottom', fill='x', padx=10, pady=10)
+            
+            ttk.Button(btn_frame, text="保存", command=save_config).pack(side='right', padx=5)
+            ttk.Button(btn_frame, text="取消", command=dialog.destroy).pack(side='right')
+            
+        except Exception as e:
+            self.logger.error(f"显示配置对话框失败: {str(e)}")
+            messagebox.showerror("错误", f"显示配置对话框失败: {str(e)}")
+
+    def validate_ip(self, ip):
+        """验证IP地址格式"""
+        try:
+            parts = ip.split('.')
+            return len(parts) == 4 and all(0 <= int(part) <= 255 for part in parts)
+        except:
+            return False
+
+    def start_turn_service(self, manual=True):
+        """启动Turn服务"""
+        try:
+            # 先检查并停止已运行的TURN服务
+            self.stop_turn_service(manual=False)
+            time.sleep(1)  # 等待服务完全停止
+            
+            # 使用短路径避免中文路径问题
+            exe_path = os.path.join(self.runtime_path, 'turnserver', 'turnserver.exe')
+            short_exe_path = self.get_short_path(exe_path)
+            if not os.path.exists(exe_path):
+                raise FileNotFoundError("找不到turnserver.exe")
+            
+            # 创建turnserver目录下的pid和log目录
+            turn_dir = os.path.dirname(exe_path)
+            pid_dir = os.path.join(turn_dir, 'pid')
+            log_dir = os.path.join(turn_dir, 'logs')
+            
+            # 确保目录存在
+            os.makedirs(pid_dir, exist_ok=True)
+            os.makedirs(log_dir, exist_ok=True)
+            
+            # 获取所有路径的短路径形式
+            short_pid_dir = self.get_short_path(pid_dir)
+            short_log_dir = self.get_short_path(log_dir)
+            short_turn_dir = self.get_short_path(turn_dir)
+            
+            # 设置输出文件路径
+            output_file = os.path.join(log_dir, 'turn_output.txt')
+            pid_file = os.path.join(pid_dir, 'turnserver.pid')
+            conf_file = os.path.join(turn_dir, 'turnserver.conf')
+            
+            # 获取短路径
+            short_output_file = self.get_short_path(output_file)
+            short_pid_file = self.get_short_path(pid_file)
+            short_conf_file = self.get_short_path(conf_file)
+            
+            # 检查配置文件
+            if not os.path.exists(conf_file):
+                # 如果配置文件不存在，从备份复制
+                backup_conf = os.path.join(turn_dir, 'turnserver copy 2.conf')
+                if os.path.exists(backup_conf):
+                    shutil.copy2(backup_conf, conf_file)
+                else:
+                    raise FileNotFoundError("找不到turnserver.conf配置文件和备份")
+            
+            # 验证IP地址是否可用
+            listening_ip = self.turn_config.get('listening_ip', '0.0.0.0')
+            if listening_ip != '0.0.0.0':
+                try:
+                    socket.inet_aton(listening_ip)
+                    # 检查IP是否是本机IP
+                    local_ips = [ip for ip in socket.gethostbyname_ex(socket.gethostname())[2]]
+                    if listening_ip not in local_ips and listening_ip != '127.0.0.1':
+                        self.logger.warning(f"配置的IP {listening_ip} 不是本机IP，将使用0.0.0.0")
+                        listening_ip = '0.0.0.0'
+                        # 更新配置
+                        self.turn_config['listening_ip'] = listening_ip
+                        self.save_turn_config()
+                except:
+                    self.logger.warning(f"无效的IP地址 {listening_ip}，将使用0.0.0.0")
+                    listening_ip = '0.0.0.0'
+                    # 更新配置
+                    self.turn_config['listening_ip'] = listening_ip
+                    self.save_turn_config()
+            
+            # 清理旧的输出文件和pid文件
+            for file in [output_file, pid_file]:
+                if os.path.exists(file):
+                    try:
+                        os.remove(file)
+                        self.logger.info(f"已清理旧文件: {file}")
+                    except Exception as e:
+                        self.logger.warning(f"清理文件失败: {str(e)}")
+            
+            # 构建启动命令
+            cmd = [
+                short_exe_path,
+                '-c', short_conf_file,
+                '--pidfile', short_pid_file,
+                '--log-file', short_output_file,
+                '--no-stdout-log',
+                '--simple-log',
+                '--listening-ip', listening_ip  # 直接在命令行指定IP
+            ]
+            
+            # 转换命令列表为字符串
+            cmd_str = ' '.join(f'"{x}"' if ' ' in x or '\\' in x else x for x in cmd)
+            full_cmd = f'cmd /c chcp 65001 & {cmd_str}'
+            
+            self.logger.info(f"启动命令: {full_cmd}")
+            
+            # 启动进程
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            process = subprocess.Popen(
+                full_cmd,
+                shell=True,
+                cwd=short_turn_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            # 等待进程启动
+            time.sleep(2)
+            
+            # 检查进程是否成功启动
+            if process.poll() is not None:
+                # 读取错误输出
+                _, stderr = process.communicate()
+                error_msg = stderr.decode('utf-8', errors='ignore')
+                raise Exception(f"TURN服务启动失败: {error_msg}")
+            
+            # 更新状态
+            self.status_labels['turn'].config(text="运行中", foreground="green")
+            
+            # 清空并初始化输出框
+            if 'turn' in self.detail_labels:
+                text_widget = self.detail_labels['turn']
+                text_widget.config(state='normal')
+                text_widget.delete('1.0', tk.END)
+                text_widget.insert('1.0', "TURN服务启动中...\n")
+                text_widget.config(state='disabled')
+            
+            # 开始监控输出
+            self.start_output_monitor('turn', output_file)
+            
+            # 只有手动启动才更新配置
+            if manual:
+                self.update_autostart_config('turn', True)
+                self.logger.info(f"手动启动，更新自动启动配置: turn = True")
+            
+            self.logger.info("TURN服务启动成功")
+            
+        except Exception as e:
+            error_msg = f"启动Turn服务失败: {str(e)}"
+            self.logger.error(error_msg)
+            self.status_labels['turn'].config(text=error_msg, foreground="red")
+            messagebox.showerror("错误", error_msg)
+
+    def stop_turn_service(self, manual=True):
+        """停止Turn服务"""
+        try:
+            # 查找并终止所有turnserver进程
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    if proc.info['name'].lower() == 'turnserver.exe':
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                    continue
+            
+            # 更新状态
+            self.status_labels['turn'].config(text="未运行", foreground="red")
+            
+            # 清空输出
+            if 'turn' in self.detail_labels:
+                text_widget = self.detail_labels['turn']
+                text_widget.config(state='normal')
+                text_widget.delete('1.0', tk.END)
+                text_widget.insert('1.0', "TURN服务已停止\n")
+                text_widget.config(state='disabled')
+            
+            # 只有手动停止才更新配置
+            if manual:
+                self.update_autostart_config('turn', False)
+                self.logger.info(f"手动停止，更新自动启动配置: turn = False")
+            
+        except Exception as e:
+            error_msg = f"停止Turn服务失败: {str(e)}"
+            self.logger.error(error_msg)
+            self.status_labels['turn'].config(text=error_msg, foreground="red")
+            messagebox.showerror("错误", error_msg)
+
+    def setup_floating_button(self):
+        """设置悬浮按钮"""
+        try:
+            icon_path = self.get_resource_path('cloud.png')
+            commands = {
+                'show': self.show_window,
+                'start': self.start_all,
+                'stop': self.stop_all,
+                'exit': self.quit_app,
+                'hide': self.hide_floating_button
+            }
+            self.floating_button = FloatingButton(self.root, icon_path, commands)
+            
+            # 设置初始位置（屏幕右侧中间）
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            x = screen_width - 60
+            y = (screen_height - 48) // 2
+            self.floating_button.geometry(f"+{x}+{y}")
+            
+            # 从配置加载悬浮按钮状态
+            self.load_floating_button_state()
+            
+        except Exception as e:
+            self.logger.error(f"设置悬浮按钮失败: {str(e)}")
+
+    def hide_floating_button(self):
+        """隐藏悬浮按钮"""
+        if hasattr(self, 'floating_button'):
+            self.floating_button.withdraw()
+            self.save_floating_button_state(False)
+
+    def show_floating_button(self):
+        """显示悬浮按钮"""
+        if hasattr(self, 'floating_button'):
+            self.floating_button.deiconify()
+            self.save_floating_button_state(True)
+
+    def save_floating_button_state(self, visible):
+        """保存悬浮按钮状态"""
+        try:
+            with open(self.theme_json, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            data['floating_button_visible'] = visible
+            with open(self.theme_json, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            self.logger.error(f"保存悬浮按钮状态失败: {str(e)}")
+
+    def load_floating_button_state(self):
+        """加载悬浮按钮状态"""
+        try:
+            with open(self.theme_json, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                visible = data.get('floating_button_visible', True)
+                if not visible:
+                    self.floating_button.withdraw()
+        except Exception as e:
+            self.logger.error(f"加载悬浮按钮状态失败: {str(e)}")
+
+    def get_short_path(self, long_path):
+        """获取Windows短路径名"""
+        try:
+            if not os.path.exists(long_path):
+                return long_path
+            
+            import win32api
+            try:
+                short_path = win32api.GetShortPathName(long_path)
+                return short_path
+            except:
+                # 如果获取短路径失败，返回原路径
+                return long_path
+        except Exception as e:
+            self.logger.error(f"获取短路径失败: {str(e)}")
+            return long_path
 
 def check_single_instance():
     """检查是否已有实例运行，确保只有一个实例"""

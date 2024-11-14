@@ -1,100 +1,102 @@
 {
     "theme": "light",
     "autostart": {
-        "signal": false,
-        "exec-ue": false
+        "signal": true,
+        "exec-ue": true,
+        "turn": false
     },
     "ue5_params": [
         {
             "param": "-Unattended",
-            "desc": "无人值守模式",
+            "desc": "\u65e0\u4eba\u503c\u5b88\u6a21\u5f0f",
             "default": true,
             "editable": false,
             "input_type": null
         },
         {
             "param": "-RenderOffScreen",
-            "desc": "离屏渲染",
+            "desc": "\u79bb\u5c4f\u6e32\u67d3",
             "default": true,
             "editable": false,
             "input_type": null
         },
         {
             "param": "-GraphicsAdapter=",
-            "desc": "显卡序号(0,1,2...)",
+            "desc": "\u663e\u5361\u5e8f\u53f7(0,1,2...)",
             "default": "0",
             "editable": true,
             "input_type": "number"
         },
         {
             "param": "-ForceRes",
-            "desc": "强制分辨率",
+            "desc": "\u5f3a\u5236\u5206\u8fa8\u7387",
             "default": true,
             "editable": false,
             "input_type": null
         },
         {
             "param": "-ResX=",
-            "desc": "分辨率宽度",
+            "desc": "\u5206\u8fa8\u7387\u5bbd\u5ea6",
             "default": "1920",
             "editable": true,
             "input_type": "number"
         },
         {
             "param": "-ResY=",
-            "desc": "分辨率高度",
+            "desc": "\u5206\u8fa8\u7387\u9ad8\u5ea6",
             "default": "1080",
             "editable": true,
             "input_type": "number"
         },
         {
             "param": "-PixelStreamingWebRTCFps=",
-            "desc": "帧率限制",
+            "desc": "\u5e27\u7387\u9650\u5236",
             "default": "30",
             "editable": true,
             "input_type": "number"
         },
         {
             "param": "-PixelStreamingWebRTCDisableReceiveAudio=",
-            "desc": "禁用音频接收",
+            "desc": "\u7981\u7528\u97f3\u9891\u63a5\u6536",
             "default": "true",
             "editable": false,
             "input_type": null
         },
         {
             "param": "-PixelStreamingWebRTCMaxBitrate=",
-            "desc": "最大比特率(bps)",
+            "desc": "\u6700\u5927\u6bd4\u7279\u7387(bps)",
             "default": "20000000",
             "editable": true,
             "input_type": "number"
         },
         {
             "param": "-AudioMixer",
-            "desc": "音频混合器",
+            "desc": "\u97f3\u9891\u6df7\u5408\u5668",
             "default": false,
             "editable": false,
             "input_type": null
         },
         {
             "param": "-RHI=Vulkan",
-            "desc": "使用Vulkan渲染",
+            "desc": "\u4f7f\u7528Vulkan\u6e32\u67d3",
             "default": false,
             "editable": false,
             "input_type": null
         },
         {
             "param": "-log",
-            "desc": "启用日志",
+            "desc": "\u542f\u7528\u65e5\u5fd7",
             "default": false,
             "editable": false,
             "input_type": null
         },
         {
             "param": "-NoVerifyGC",
-            "desc": "禁用GC验证",
+            "desc": "\u7981\u7528GC\u9a8c\u8bc1",
             "default": false,
             "editable": false,
             "input_type": null
         }
-    ]
-}       
+    ],
+    "floating_button_visible": true
+}
